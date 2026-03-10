@@ -1,88 +1,240 @@
-// ═══════════════════════════════════════════════════════════════════
-//  HOW TO USE THIS FILE
-//
-//  This is NOT a replacement for your existing index.js.
-//  It shows you exactly WHAT TO ADD to your existing index.js
-//  Read the comments and paste each section into the right place.
-// ═══════════════════════════════════════════════════════════════════
+require('dotenv').config();
+const fs = require('fs');
+const path = require('path');
+const { Client, Collection, GatewayIntentBits, ChannelType, PermissionsBitField } = require('discord.js');
+const db = require('./db');
 
-// ──────────────────────────────────────────────────────────────────
-// STEP A: Add these lines near the TOP of your index.js
-//         (alongside your other require() lines)
-// ──────────────────────────────────────────────────────────────────
-
+// ====== NEW: Load helpers ======
 const { startAutoBackup } = require('./utils/autoBackup');
 const { setupErrorHandlers } = require('./utils/errorHandler');
 const buttonHandler = require('./interactions/buttonHandler');
 
-// ──────────────────────────────────────────────────────────────────
-// STEP B: When loading commands, make sure this section is present
-//         (you likely already have something like this)
-//         If you don't, add this block.
-// ──────────────────────────────────────────────────────────────────
+// ====== Create Client ======
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds]
+});
 
-const fs = require('fs');
-const path = require('path');
-const { Collection } = require('discord.js');
-
-// Create a Collection to store commands
+// ====== Load Commands ======
 client.commands = new Collection();
 
 const commandsPath = path.join(__dirname, 'commands');
-const commandFiles = fs.readdirSync(commandsPath).filter(f => f.endsWith('.js'));
+const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'));
 
 for (const file of commandFiles) {
-  const command = require(path.join(commandsPath, file));
-  if (command.data && command.execute) {
+  const filePath = path.join(commandsPath, file);
+  const command = require(filePath);
+  if ('data' in command && 'execute' in command) {
     client.commands.set(command.data.name, command);
   }
 }
 
-// ──────────────────────────────────────────────────────────────────
-// STEP C: Register the button handler as an event listener
-//         Add this line somewhere AFTER client is created
-// ──────────────────────────────────────────────────────────────────
+// ====== Helpers: Ensure Categories & Channels ======
+async function ensureStructure(guild) {
 
-client.on(buttonHandler.name, (...args) => buttonHandler.execute(...args));
+  let activeCat = guild.channels.cache.find(
+    c => c.name === 'collabs-active' && c.type === ChannelType.GuildCategory
+  );
 
-// ──────────────────────────────────────────────────────────────────
-// STEP D: Inside your client.once('ready', ...) block, add:
-// ──────────────────────────────────────────────────────────────────
+  let closedCat = guild.channels.cache.find(
+    c => c.name === 'collabs-closed' && c.type === ChannelType.GuildCategory
+  );
 
-client.once('ready', () => {
-  console.log(`✅ Bot is online as ${client.user.tag}`);
+  if (!activeCat) {
+    activeCat = await guild.channels.create({
+      name: 'collabs-active',
+      type: ChannelType.GuildCategory
+    });
+  }
 
-  // ADD THESE TWO LINES:
-  setupErrorHandlers(client);
-  startAutoBackup(client);
-});
+  if (!closedCat) {
+    closedCat = await guild.channels.create({
+      name: 'collabs-closed',
+      type: ChannelType.GuildCategory
+    });
+  }
 
-// ──────────────────────────────────────────────────────────────────
-// STEP E: Make sure your interactionCreate handler calls commands.
-//         If you already have one, check it looks like this.
-//         The errorHandler.js ALSO handles this — so only keep ONE.
-// ──────────────────────────────────────────────────────────────────
+  // Announcement Channel
+  let ann = guild.channels.cache.find(
+    c => c.name === 'collabs-announcements' && c.type === ChannelType.GuildText
+  );
 
-// NOTE: If you already have an interactionCreate listener that handles
-// slash commands, you do NOT need to add this one.
-// The error handler in utils/errorHandler.js handles it automatically.
-// But if you have NO interactionCreate handler yet, add this:
+  if (!ann) {
+    ann = await guild.channels.create({
+      name: 'collabs-announcements',
+      type: ChannelType.GuildText,
+      permissionOverwrites: [
+        { id: guild.roles.everyone.id, deny: [PermissionsBitField.Flags.SendMessages] }
+      ]
+    });
+  }
 
-client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
+  // Logs Channel
+  let logs = guild.channels.cache.find(
+    c => c.name === 'logs' && c.type === ChannelType.GuildText
+  );
 
-  const command = client.commands.get(interaction.commandName);
-  if (!command) return;
+  if (!logs) {
+    logs = await guild.channels.create({
+      name: 'logs',
+      type: ChannelType.GuildText,
+      permissionOverwrites: [
+        { id: guild.roles.everyone.id, deny: [PermissionsBitField.Flags.SendMessages] }
+      ]
+    });
+  }
+
+  return { activeCat, closedCat, ann, logs };
+
+}
+
+// ====== Interaction Handlers ======
+const { handleButton } = require('./interactions/buttons');
+const { handleModal } = require('./interactions/modals');
+
+// ====== Auto Close Logic ======
+async function autoCloseExpiredCollabs() {
 
   try {
-    await command.execute(interaction);
-  } catch (error) {
-    console.error(`[Command Error] /${interaction.commandName}:`, error.message);
-    const msg = { content: `❌ Error: ${error.message}`, ephemeral: true };
-    if (interaction.deferred || interaction.replied) {
-      await interaction.editReply(msg).catch(() => {});
-    } else {
-      await interaction.reply(msg).catch(() => {});
+
+    const now = Date.now();
+
+    const expired = db.prepare(
+      "SELECT * FROM collabs WHERE status = 'active' AND deadline <= ?"
+    ).all(now);
+
+    for (const collab of expired) {
+
+      try {
+
+        if (!collab.channel_id) continue;
+
+        const channel = await client.channels.fetch(collab.channel_id).catch(() => null);
+
+        if (!channel || !channel.guild) continue;
+
+        const guild = channel.guild;
+
+        const { closedCat, logs } = await ensureStructure(guild);
+
+        let newName = channel.name;
+
+        if (!newName.startsWith('🔴')) {
+          newName = `🔴-${newName.replace(/^🟢-/, '')}`;
+        }
+
+        await channel.setName(newName).catch(() => {});
+        await channel.setParent(closedCat.id).catch(() => {});
+
+        await channel.permissionOverwrites
+          .edit(guild.roles.everyone, { SendMessages: false })
+          .catch(() => {});
+
+        db.prepare(
+          "UPDATE collabs SET status = 'closed' WHERE id = ?"
+        ).run(collab.id);
+
+        const contestCount = db.prepare(
+          "SELECT COUNT(*) as n FROM submissions WHERE collab_id = ? AND contest_link IS NOT NULL AND contest_link != ''"
+        ).get(collab.id).n;
+
+        const walletCount = db.prepare(
+          "SELECT COUNT(*) as n FROM submissions WHERE collab_id = ? AND sheet_link IS NOT NULL AND sheet_link != ''"
+        ).get(collab.id).n;
+
+        if (logs) {
+          await logs.send(
+            `🔴 **Auto Closed Collab:** ${collab.name}\n` +
+            `📝 Contest submissions: **${contestCount}**\n` +
+            `💼 Wallet sheets: **${walletCount}**`
+          );
+        }
+
+      } catch (e) {
+        console.error('Auto-close error for collab:', collab.id, e);
+      }
+
     }
+
+  } catch (err) {
+    console.error('Auto-close loop error:', err);
   }
+
+}
+
+// ====== Ready ======
+client.once('clientReady', () => {
+
+  console.log(`✅ Logged in as ${client.user.tag}`);
+
+  // NEW: Start error handlers and auto backup
+  setupErrorHandlers(client);
+  startAutoBackup(client);
+
+  autoCloseExpiredCollabs();
+
+  setInterval(() => {
+    autoCloseExpiredCollabs();
+  }, 10 * 60 * 1000);
+
 });
+
+// ====== NEW: Button handler for collab_panel pagination ======
+client.on(buttonHandler.name, (...args) => buttonHandler.execute(...args));
+
+// ====== Interaction Create ======
+client.on('interactionCreate', async interaction => {
+
+  try {
+
+    if (interaction.isChatInputCommand()) {
+
+      const command = client.commands.get(interaction.commandName);
+      if (!command) return;
+
+      await command.execute(interaction, client, ensureStructure);
+      return;
+
+    }
+
+    if (interaction.isButton() || interaction.isStringSelectMenu()) {
+
+      await handleButton(interaction);
+      return;
+
+    }
+
+    if (interaction.isModalSubmit()) {
+
+      await handleModal(interaction);
+      return;
+
+    }
+
+  } catch (err) {
+
+    console.error(err);
+
+    try {
+
+      if (interaction.replied || interaction.deferred) {
+        await interaction.followUp({
+          content: '❌ Error happened.',
+          ephemeral: true
+        });
+      } else {
+        await interaction.reply({
+          content: '❌ Error happened.',
+          ephemeral: true
+        });
+      }
+
+    } catch (e) {
+      console.error('Failed to send error reply:', e);
+    }
+
+  }
+
+});
+
+// ====== Login ======
+client.login(process.env.TOKEN);
