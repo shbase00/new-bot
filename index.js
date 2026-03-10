@@ -4,10 +4,11 @@ const path = require('path');
 const { Client, Collection, GatewayIntentBits, ChannelType, PermissionsBitField } = require('discord.js');
 const db = require('./db');
 
-// ====== NEW: Load helpers ======
+// ====== Helpers ======
 const { startAutoBackup } = require('./utils/autoBackup');
 const { setupErrorHandlers } = require('./utils/errorHandler');
 const buttonHandler = require('./interactions/buttonHandler');
+const { handleDashboard, handleDashboardSelect, handleDashboardModal } = require('./interactions/dashboardHandler');
 
 // ====== Create Client ======
 const client = new Client({
@@ -34,50 +35,28 @@ async function ensureStructure(guild) {
   let activeCat = guild.channels.cache.find(
     c => c.name === 'collabs-active' && c.type === ChannelType.GuildCategory
   );
-
   let closedCat = guild.channels.cache.find(
     c => c.name === 'collabs-closed' && c.type === ChannelType.GuildCategory
   );
 
-  if (!activeCat) {
-    activeCat = await guild.channels.create({
-      name: 'collabs-active',
-      type: ChannelType.GuildCategory
-    });
-  }
+  if (!activeCat) activeCat = await guild.channels.create({ name: 'collabs-active', type: ChannelType.GuildCategory });
+  if (!closedCat) closedCat = await guild.channels.create({ name: 'collabs-closed', type: ChannelType.GuildCategory });
 
-  if (!closedCat) {
-    closedCat = await guild.channels.create({
-      name: 'collabs-closed',
-      type: ChannelType.GuildCategory
-    });
-  }
-
-  let ann = guild.channels.cache.find(
-    c => c.name === 'collabs-announcements' && c.type === ChannelType.GuildText
-  );
-
+  let ann = guild.channels.cache.find(c => c.name === 'collabs-announcements' && c.type === ChannelType.GuildText);
   if (!ann) {
     ann = await guild.channels.create({
       name: 'collabs-announcements',
       type: ChannelType.GuildText,
-      permissionOverwrites: [
-        { id: guild.roles.everyone.id, deny: [PermissionsBitField.Flags.SendMessages] }
-      ]
+      permissionOverwrites: [{ id: guild.roles.everyone.id, deny: [PermissionsBitField.Flags.SendMessages] }]
     });
   }
 
-  let logs = guild.channels.cache.find(
-    c => c.name === 'logs' && c.type === ChannelType.GuildText
-  );
-
+  let logs = guild.channels.cache.find(c => c.name === 'logs' && c.type === ChannelType.GuildText);
   if (!logs) {
     logs = await guild.channels.create({
       name: 'logs',
       type: ChannelType.GuildText,
-      permissionOverwrites: [
-        { id: guild.roles.everyone.id, deny: [PermissionsBitField.Flags.SendMessages] }
-      ]
+      permissionOverwrites: [{ id: guild.roles.everyone.id, deny: [PermissionsBitField.Flags.SendMessages] }]
     });
   }
 
@@ -86,15 +65,13 @@ async function ensureStructure(guild) {
 
 // ====== Interaction Handlers ======
 const { handleButton } = require('./interactions/buttons');
-const { handleModal } = require('./interactions/modals');
+const { handleModal }  = require('./interactions/modals');
 
 // ====== Auto Close Logic ======
 async function autoCloseExpiredCollabs() {
   try {
     const now = Date.now();
-    const expired = db.prepare(
-      "SELECT * FROM collabs WHERE status = 'active' AND deadline <= ?"
-    ).all(now);
+    const expired = db.prepare("SELECT * FROM collabs WHERE status='active' AND deadline <= ?").all(now);
 
     for (const collab of expired) {
       try {
@@ -107,24 +84,19 @@ async function autoCloseExpiredCollabs() {
         const { closedCat, logs } = await ensureStructure(guild);
 
         let newName = channel.name;
-        if (!newName.startsWith('🔴')) {
-          newName = `🔴-${newName.replace(/^🟢-/, '')}`;
-        }
+        if (!newName.startsWith('🔴')) newName = `🔴-${newName.replace(/^🟢-/, '')}`;
 
         await channel.setName(newName).catch(() => {});
         await channel.setParent(closedCat.id).catch(() => {});
-        await channel.permissionOverwrites
-          .edit(guild.roles.everyone, { SendMessages: false })
-          .catch(() => {});
+        await channel.permissionOverwrites.edit(guild.roles.everyone, { SendMessages: false }).catch(() => {});
 
-        db.prepare("UPDATE collabs SET status = 'closed' WHERE id = ?").run(collab.id);
+        db.prepare("UPDATE collabs SET status='closed' WHERE id=?").run(collab.id);
 
         const contestCount = db.prepare(
-          "SELECT COUNT(*) as n FROM submissions WHERE collab_id = ? AND contest_link IS NOT NULL AND contest_link != ''"
+          "SELECT COUNT(*) as n FROM submissions WHERE collab_id=? AND contest_link IS NOT NULL AND contest_link!=''"
         ).get(collab.id).n;
-
         const walletCount = db.prepare(
-          "SELECT COUNT(*) as n FROM submissions WHERE collab_id = ? AND sheet_link IS NOT NULL AND sheet_link != ''"
+          "SELECT COUNT(*) as n FROM submissions WHERE collab_id=? AND sheet_link IS NOT NULL AND sheet_link!=''"
         ).get(collab.id).n;
 
         if (logs) {
@@ -135,35 +107,29 @@ async function autoCloseExpiredCollabs() {
           );
         }
 
-      } catch (e) {
-        console.error('Auto-close error for collab:', collab.id, e);
-      }
+      } catch (e) { console.error('Auto-close error for collab:', collab.id, e); }
     }
 
-  } catch (err) {
-    console.error('Auto-close loop error:', err);
-  }
+  } catch (err) { console.error('Auto-close loop error:', err); }
 }
 
 // ====== Ready ======
 client.once('clientReady', () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
-
-  // NEW: error protection and auto backups
   setupErrorHandlers(client);
   startAutoBackup(client);
-
   autoCloseExpiredCollabs();
   setInterval(() => autoCloseExpiredCollabs(), 10 * 60 * 1000);
 });
 
-// ====== NEW: Button handler for collab_panel pagination ======
+// ====== Button handler for collab_panel pagination ======
 client.on(buttonHandler.name, (...args) => buttonHandler.execute(...args));
 
 // ====== Interaction Create ======
 client.on('interactionCreate', async interaction => {
   try {
 
+    // ── Slash Commands ───────────────────────────────────────────────────────
     if (interaction.isChatInputCommand()) {
       const command = client.commands.get(interaction.commandName);
       if (!command) return;
@@ -171,12 +137,53 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
-    if (interaction.isButton() || interaction.isStringSelectMenu()) {
+    // ── Dashboard Buttons ────────────────────────────────────────────────────
+    if (interaction.isButton()) {
+      const id = interaction.customId;
+
+      // Dashboard admin panel buttons
+      if (id.startsWith('dash_') || id.startsWith('dashlist_')) {
+        await handleDashboard(interaction);
+        return;
+      }
+
+      // collab_panel pagination buttons
+      if (id.startsWith('panel_')) {
+        await buttonHandler.execute(interaction);
+        return;
+      }
+
+      // Original submit buttons (contest / wallet)
       await handleButton(interaction);
       return;
     }
 
+    // ── Select Menus ─────────────────────────────────────────────────────────
+    if (interaction.isStringSelectMenu()) {
+      const id = interaction.customId;
+
+      // Dashboard select menus
+      if (id.startsWith('dashSelect_')) {
+        await handleDashboardSelect(interaction);
+        return;
+      }
+
+      // Original select menus (export, close, tier, community, wallet)
+      await handleButton(interaction);
+      return;
+    }
+
+    // ── Modals ───────────────────────────────────────────────────────────────
     if (interaction.isModalSubmit()) {
+      const id = interaction.customId;
+
+      // Dashboard modals
+      if (id.startsWith('dashModal_')) {
+        await handleDashboardModal(interaction, client, ensureStructure);
+        return;
+      }
+
+      // Original modals (contestModal, walletModal)
       await handleModal(interaction);
       return;
     }
@@ -189,9 +196,7 @@ client.on('interactionCreate', async interaction => {
       } else {
         await interaction.reply({ content: '❌ Error happened.', ephemeral: true });
       }
-    } catch (e) {
-      console.error('Failed to send error reply:', e);
-    }
+    } catch (e) { console.error('Failed to send error reply:', e); }
   }
 });
 
