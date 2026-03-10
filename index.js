@@ -5,31 +5,27 @@ const { Client, Collection, GatewayIntentBits, ChannelType, PermissionsBitField 
 const db = require('./db');
 
 // ====== Helpers ======
-const { startAutoBackup } = require('./utils/autoBackup');
+const { startAutoBackup }  = require('./utils/autoBackup');
 const { setupErrorHandlers } = require('./utils/errorHandler');
-const buttonHandler = require('./interactions/buttonHandler');
-const { handleDashboard, handleDashboardSelect, handleDashboardModal, handleEditConfirm } = require('./interactions/dashboardHandler');
+const buttonHandler        = require('./interactions/buttonHandler');
+const { handleDashboard, handleDashboardSelect, handleDashboardModal } = require('./interactions/dashboardHandler');
 
 // ====== Create Client ======
-const client = new Client({
-  intents: [GatewayIntentBits.Guilds]
-});
+const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
 // ====== Load Commands ======
 client.commands = new Collection();
-
-const commandsPath = path.join(__dirname, 'commands');
-const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'));
+const commandsPath  = path.join(__dirname, 'commands');
+const commandFiles  = fs.readdirSync(commandsPath).filter(f => f.endsWith('.js'));
 
 for (const file of commandFiles) {
-  const filePath = path.join(commandsPath, file);
-  const command = require(filePath);
+  const command = require(path.join(commandsPath, file));
   if ('data' in command && 'execute' in command) {
     client.commands.set(command.data.name, command);
   }
 }
 
-// ====== Helpers: Ensure Categories & Channels ======
+// ====== Ensure Categories & Channels ======
 async function ensureStructure(guild) {
   let activeCat = guild.channels.cache.find(c => c.name === 'collabs-active' && c.type === ChannelType.GuildCategory);
   let closedCat = guild.channels.cache.find(c => c.name === 'collabs-closed' && c.type === ChannelType.GuildCategory);
@@ -38,22 +34,16 @@ async function ensureStructure(guild) {
   if (!closedCat) closedCat = await guild.channels.create({ name: 'collabs-closed', type: ChannelType.GuildCategory });
 
   let ann = guild.channels.cache.find(c => c.name === 'collabs-announcements' && c.type === ChannelType.GuildText);
-  if (!ann) {
-    ann = await guild.channels.create({
-      name: 'collabs-announcements',
-      type: ChannelType.GuildText,
-      permissionOverwrites: [{ id: guild.roles.everyone.id, deny: [PermissionsBitField.Flags.SendMessages] }]
-    });
-  }
+  if (!ann) ann = await guild.channels.create({
+    name: 'collabs-announcements', type: ChannelType.GuildText,
+    permissionOverwrites: [{ id: guild.roles.everyone.id, deny: [PermissionsBitField.Flags.SendMessages] }],
+  });
 
   let logs = guild.channels.cache.find(c => c.name === 'logs' && c.type === ChannelType.GuildText);
-  if (!logs) {
-    logs = await guild.channels.create({
-      name: 'logs',
-      type: ChannelType.GuildText,
-      permissionOverwrites: [{ id: guild.roles.everyone.id, deny: [PermissionsBitField.Flags.SendMessages] }]
-    });
-  }
+  if (!logs) logs = await guild.channels.create({
+    name: 'logs', type: ChannelType.GuildText,
+    permissionOverwrites: [{ id: guild.roles.everyone.id, deny: [PermissionsBitField.Flags.SendMessages] }],
+  });
 
   return { activeCat, closedCat, ann, logs };
 }
@@ -62,7 +52,7 @@ async function ensureStructure(guild) {
 const { handleButton } = require('./interactions/buttons');
 const { handleModal }  = require('./interactions/modals');
 
-// ====== Auto Close Logic ======
+// ====== Auto Close ======
 async function autoCloseExpiredCollabs() {
   try {
     const now     = Date.now();
@@ -89,14 +79,10 @@ async function autoCloseExpiredCollabs() {
         const contestCount = db.prepare("SELECT COUNT(*) as n FROM submissions WHERE collab_id=? AND contest_link IS NOT NULL AND contest_link!=''").get(collab.id).n;
         const walletCount  = db.prepare("SELECT COUNT(*) as n FROM submissions WHERE collab_id=? AND sheet_link IS NOT NULL AND sheet_link!=''").get(collab.id).n;
 
-        if (logs) {
-          await logs.send(
-            `🔴 **Auto Closed Collab:** ${collab.name}\n` +
-            `📝 Contest submissions: **${contestCount}**\n` +
-            `💼 Wallet sheets: **${walletCount}**`
-          );
-        }
-      } catch (e) { console.error('Auto-close error for collab:', collab.id, e); }
+        if (logs) await logs.send(
+          `🔴 **Auto Closed:** ${collab.name}\n📝 Contest: **${contestCount}** | 💼 Wallets: **${walletCount}**`
+        );
+      } catch (e) { console.error('Auto-close error:', collab.id, e); }
     }
   } catch (err) { console.error('Auto-close loop error:', err); }
 }
@@ -110,14 +96,13 @@ client.once('clientReady', () => {
   setInterval(() => autoCloseExpiredCollabs(), 10 * 60 * 1000);
 });
 
-// ====== Button handler for collab_panel pagination ======
 client.on(buttonHandler.name, (...args) => buttonHandler.execute(...args));
 
 // ====== Interaction Create ======
 client.on('interactionCreate', async interaction => {
   try {
 
-    // ── Slash Commands ─────────────────────────────────────────────
+    // ── Slash Commands ─────────────────────────────────────────
     if (interaction.isChatInputCommand()) {
       const command = client.commands.get(interaction.commandName);
       if (!command) return;
@@ -125,29 +110,21 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
-    // ── Buttons ────────────────────────────────────────────────────
+    // ── Buttons ────────────────────────────────────────────────
     if (interaction.isButton()) {
       const id = interaction.customId;
 
-      // Dashboard buttons
-      if (id.startsWith('dash_') || id.startsWith('dashlist_') || id.startsWith('dashBtn_step') || id.startsWith('dashBtn_confirm_') || id.startsWith('dashBtn_cancel_')) {
+      // All dashboard buttons
+      if (
+        id.startsWith('dash_')       ||
+        id.startsWith('dashlist_')   ||
+        id.startsWith('dashBtn_')
+      ) {
         await handleDashboard(interaction);
         return;
       }
 
-      // Edit confirm button (save without changing requirements)
-      if (id.startsWith('dashBtn_editConfirm_')) {
-        await handleEditConfirm(interaction);
-        return;
-      }
-
-      // Edit step 2 button
-      if (id.startsWith('dashBtn_editStep2_')) {
-        await handleDashboard(interaction);
-        return;
-      }
-
-      // collab_panel pagination buttons
+      // collab_panel pagination
       if (id.startsWith('panel_')) {
         await buttonHandler.execute(interaction);
         return;
@@ -158,7 +135,7 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
-    // ── Select Menus ───────────────────────────────────────────────
+    // ── Select Menus ───────────────────────────────────────────
     if (interaction.isStringSelectMenu()) {
       const id = interaction.customId;
 
@@ -171,7 +148,7 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
-    // ── Modals ─────────────────────────────────────────────────────
+    // ── Modals ─────────────────────────────────────────────────
     if (interaction.isModalSubmit()) {
       const id = interaction.customId;
 
