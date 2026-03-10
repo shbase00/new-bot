@@ -1,6 +1,5 @@
 // commands/admin_panel.js
-// Creates a permanent pinned admin dashboard in the current channel
-// Usage: /admin_panel  (run once — it pins itself)
+// Run /admin_panel once in your admin channel — it posts and pins the dashboard
 
 const {
   SlashCommandBuilder,
@@ -22,56 +21,46 @@ module.exports = {
   async execute(interaction) {
     await interaction.deferReply({ ephemeral: true });
 
-    const embed = buildDashboardEmbed();
-    const rows = buildDashboardButtons();
-
     const msg = await interaction.channel.send({
-      embeds: [embed],
-      components: rows,
+      embeds: [buildDashboardEmbed()],
+      components: buildDashboardButtons(),
     });
 
-    // Pin the message
     await msg.pin().catch(() => {});
-
     await interaction.editReply('✅ Admin panel posted and pinned!');
   },
 };
 
-// ── Build the stats embed ─────────────────────────────────────────────────────
+// ── Stats Embed ───────────────────────────────────────────────────
 function buildDashboardEmbed() {
-  let totalCollabs = 0, activeCollabs = 0, closedCollabs = 0;
-  let totalSubmissions = 0, walletSheets = 0;
+  let total = 0, active = 0, closed = 0, subs = 0, wallets = 0;
 
   try {
-    totalCollabs     = db.prepare(`SELECT COUNT(*) as c FROM collabs`).get().c;
-    activeCollabs    = db.prepare(`SELECT COUNT(*) as c FROM collabs WHERE status='active'`).get().c;
-    closedCollabs    = db.prepare(`SELECT COUNT(*) as c FROM collabs WHERE status='closed'`).get().c;
-    totalSubmissions = db.prepare(`SELECT COUNT(*) as c FROM submissions`).get().c;
-    walletSheets     = db.prepare(`SELECT COUNT(*) as c FROM submissions WHERE sheet_link IS NOT NULL AND sheet_link != ''`).get().c;
-  } catch (e) { /* db not ready yet */ }
+    total   = db.prepare(`SELECT COUNT(*) as c FROM collabs`).get().c;
+    active  = db.prepare(`SELECT COUNT(*) as c FROM collabs WHERE status='active'`).get().c;
+    closed  = db.prepare(`SELECT COUNT(*) as c FROM collabs WHERE status='closed'`).get().c;
+    subs    = db.prepare(`SELECT COUNT(*) as c FROM submissions`).get().c;
+    wallets = db.prepare(`SELECT COUNT(*) as c FROM submissions WHERE sheet_link IS NOT NULL AND sheet_link!=''`).get().c;
+  } catch (e) { /* db not ready */ }
 
   return new EmbedBuilder()
     .setTitle('⚙️ Admin Control Panel')
     .setColor(0x5865F2)
-    .setDescription('Use the buttons below to manage all collabs from this panel.')
-    .addFields(
-      {
-        name: '📊 Live Stats',
-        value: [
-          `> 📁 Total Collabs: **${totalCollabs}**`,
-          `> 🟢 Active: **${activeCollabs}**`,
-          `> 🔴 Closed: **${closedCollabs}**`,
-          `> 📝 Submissions: **${totalSubmissions}**`,
-          `> 💰 Wallet Sheets: **${walletSheets}**`,
-        ].join('\n'),
-        inline: false,
-      }
-    )
-    .setFooter({ text: `Last updated` })
+    .setDescription('Manage all collabs from this panel. Use the buttons below.')
+    .addFields({
+      name: '📊 Live Stats',
+      value: [
+        `> 📁 Total Collabs: **${total}**`,
+        `> 🟢 Active: **${active}**  🔴 Closed: **${closed}**`,
+        `> 📝 Submissions: **${subs}**`,
+        `> 💰 Wallet Sheets: **${wallets}**`,
+      ].join('\n'),
+    })
+    .setFooter({ text: 'Last updated' })
     .setTimestamp();
 }
 
-// ── Build the button rows ─────────────────────────────────────────────────────
+// ── Button Rows ───────────────────────────────────────────────────
 function buildDashboardButtons() {
   const row1 = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -79,9 +68,16 @@ function buildDashboardButtons() {
       .setLabel('➕ Add Collab')
       .setStyle(ButtonStyle.Success),
     new ButtonBuilder()
+      .setCustomId('dash_edit_collab')
+      .setLabel('✏️ Edit Collab')
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
       .setCustomId('dash_close_collab')
       .setLabel('🔴 Close Collab')
       .setStyle(ButtonStyle.Danger),
+  );
+
+  const row2 = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId('dash_view_active')
       .setLabel('🟢 Active Collabs')
@@ -90,9 +86,13 @@ function buildDashboardButtons() {
       .setCustomId('dash_view_closed')
       .setLabel('📋 Closed Collabs')
       .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId('dash_collab_info')
+      .setLabel('🔍 Collab Info')
+      .setStyle(ButtonStyle.Secondary),
   );
 
-  const row2 = new ActionRowBuilder().addComponents(
+  const row3 = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId('dash_stats')
       .setLabel('📊 Refresh Stats')
@@ -105,14 +105,10 @@ function buildDashboardButtons() {
       .setCustomId('dash_export_db')
       .setLabel('💾 Backup DB')
       .setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder()
-      .setCustomId('dash_collab_info')
-      .setLabel('🔍 Collab Info')
-      .setStyle(ButtonStyle.Secondary),
   );
 
-  return [row1, row2];
+  return [row1, row2, row3];
 }
 
-module.exports.buildDashboardEmbed = buildDashboardEmbed;
+module.exports.buildDashboardEmbed  = buildDashboardEmbed;
 module.exports.buildDashboardButtons = buildDashboardButtons;
