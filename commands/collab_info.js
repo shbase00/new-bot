@@ -1,9 +1,6 @@
 // commands/collab_info.js
-// Shows detailed info for a specific collab
-
 const { SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits } = require('discord.js');
-
-const DB_PATH = process.env.DB_PATH || '/data/collabs.db';
+const db = require('../db');
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -20,45 +17,30 @@ module.exports = {
     await interaction.deferReply({ ephemeral: true });
 
     try {
-      const Database = require('better-sqlite3');
-      const db = new Database(DB_PATH, { readonly: true });
-
       const search = `%${interaction.options.getString('name')}%`;
 
-      const collab = db.prepare(`
-        SELECT * FROM collabs WHERE name LIKE ? LIMIT 1
-      `).get(search);
+      const collab = db.prepare(`SELECT * FROM collabs WHERE name LIKE ? LIMIT 1`).get(search);
 
       if (!collab) {
-        db.close();
         return await interaction.editReply({ content: `❌ No collab found matching that name.` });
       }
 
-      // Count submissions for this collab
-      let submissionCount = 0;
-      let walletCount = 0;
-      try {
-        submissionCount = db.prepare(`SELECT COUNT(*) as count FROM submissions WHERE collab_id = ?`).get(collab.id).count;
-        walletCount = db.prepare(`SELECT COUNT(*) as count FROM submissions WHERE collab_id = ? AND wallet_sheet IS NOT NULL AND wallet_sheet != ''`).get(collab.id).count;
-      } catch (e) { /* ignore if collab_id not in submissions */ }
+      // Count submissions — uses sheet_link column (matching your modals.js)
+      const submissionCount = db.prepare(
+        `SELECT COUNT(*) as count FROM submissions WHERE collab_id = ?`
+      ).get(collab.id).count;
 
-      db.close();
+      const walletCount = db.prepare(
+        `SELECT COUNT(*) as count FROM submissions WHERE collab_id = ? AND sheet_link IS NOT NULL AND sheet_link != ''`
+      ).get(collab.id).count;
 
-      // Status emoji
       const statusEmoji = collab.status === 'active' ? '🟢' : '🔴';
 
-      // Format deadline
+      // Deadline is stored as a unix timestamp (ms) in your bot
       let deadlineText = 'Not set';
       if (collab.deadline) {
-        const d = new Date(collab.deadline);
-        deadlineText = isNaN(d) ? collab.deadline : `<t:${Math.floor(d.getTime() / 1000)}:F>`;
-      }
-
-      // Format mint date
-      let mintText = 'Not set';
-      if (collab.mint_date) {
-        const m = new Date(collab.mint_date);
-        mintText = isNaN(m) ? collab.mint_date : `<t:${Math.floor(m.getTime() / 1000)}:D>`;
+        const secs = Math.floor(collab.deadline / 1000);
+        deadlineText = `<t:${secs}:F>`;
       }
 
       const embed = new EmbedBuilder()
@@ -67,14 +49,14 @@ module.exports = {
         .setTimestamp()
         .addFields(
           { name: '📋 Description', value: collab.description || 'None', inline: false },
-          { name: '🎯 Status', value: `${statusEmoji} ${collab.status || 'Unknown'}`, inline: true },
-          { name: '🎟️ Spots', value: String(collab.spots || 'N/A'), inline: true },
-          { name: '💰 Price', value: collab.price || 'N/A', inline: true },
-          { name: '📦 Supply', value: String(collab.supply || 'N/A'), inline: true },
-          { name: '📅 Mint Date', value: mintText, inline: true },
-          { name: '⏰ Deadline', value: deadlineText, inline: true },
-          { name: '📝 Submissions', value: String(submissionCount), inline: true },
-          { name: '💰 Wallet Sheets', value: String(walletCount), inline: true },
+          { name: '🎯 Status',       value: `${statusEmoji} ${collab.status || 'Unknown'}`, inline: true },
+          { name: '🎟️ Spots',        value: String(collab.spots || 'N/A'), inline: true },
+          { name: '💰 Price',        value: collab.price || 'N/A', inline: true },
+          { name: '📦 Supply',       value: String(collab.supply || 'N/A'), inline: true },
+          { name: '🗓 Mint Date',    value: collab.date || 'N/A', inline: true },
+          { name: '⏰ Deadline',     value: deadlineText, inline: true },
+          { name: '📝 Submissions',  value: String(submissionCount), inline: true },
+          { name: '💰 Wallet Sheets',value: String(walletCount), inline: true },
           { name: '📌 Requirements', value: collab.requirements || 'None', inline: false },
         )
         .setFooter({ text: `Collab ID: ${collab.id}` });
