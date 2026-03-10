@@ -1,9 +1,6 @@
 // commands/collab_stats.js
-// Shows overall statistics for all collabs and submissions
-
 const { SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits } = require('discord.js');
-
-const DB_PATH = process.env.DB_PATH || '/data/collabs.db';
+const db = require('../db');
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -15,21 +12,18 @@ module.exports = {
     await interaction.deferReply({ ephemeral: true });
 
     try {
-      const Database = require('better-sqlite3');
-      const db = new Database(DB_PATH, { readonly: true });
-
-      // --- Fetch stats ---
-      const totalCollabs = db.prepare(`SELECT COUNT(*) as count FROM collabs`).get().count;
-      const activeCollabs = db.prepare(`SELECT COUNT(*) as count FROM collabs WHERE status = 'active'`).get().count;
-      const closedCollabs = db.prepare(`SELECT COUNT(*) as count FROM collabs WHERE status = 'closed'`).get().count;
+      const totalCollabs   = db.prepare(`SELECT COUNT(*) as count FROM collabs`).get().count;
+      const activeCollabs  = db.prepare(`SELECT COUNT(*) as count FROM collabs WHERE status = 'active'`).get().count;
+      const closedCollabs  = db.prepare(`SELECT COUNT(*) as count FROM collabs WHERE status = 'closed'`).get().count;
       const totalSubmissions = db.prepare(`SELECT COUNT(*) as count FROM submissions`).get().count;
 
-      // Wallet sheets = submissions that have a wallet_sheet value filled in
+      // Wallet sheets — uses sheet_link column (matching your modals.js)
       let walletSheets = 0;
       try {
-        walletSheets = db.prepare(`SELECT COUNT(*) as count FROM submissions WHERE wallet_sheet IS NOT NULL AND wallet_sheet != ''`).get().count;
+        walletSheets = db.prepare(
+          `SELECT COUNT(*) as count FROM submissions WHERE sheet_link IS NOT NULL AND sheet_link != ''`
+        ).get().count;
       } catch (e) {
-        // wallet_sheet column might not exist in older schemas
         walletSheets = 'N/A';
       }
 
@@ -47,9 +41,6 @@ module.exports = {
         if (top) topCollab = top;
       } catch (e) { /* ignore */ }
 
-      db.close();
-
-      // --- Build embed ---
       const embed = new EmbedBuilder()
         .setTitle('📊 Collab Statistics')
         .setColor(0x5865F2)
