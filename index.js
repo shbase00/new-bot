@@ -8,7 +8,7 @@ const db = require('./db');
 const { startAutoBackup } = require('./utils/autoBackup');
 const { setupErrorHandlers } = require('./utils/errorHandler');
 const buttonHandler = require('./interactions/buttonHandler');
-const { handleDashboard, handleDashboardSelect, handleDashboardModal } = require('./interactions/dashboardHandler');
+const { handleDashboard, handleDashboardSelect, handleDashboardModal, handleEditConfirm } = require('./interactions/dashboardHandler');
 
 // ====== Create Client ======
 const client = new Client({
@@ -31,13 +31,8 @@ for (const file of commandFiles) {
 
 // ====== Helpers: Ensure Categories & Channels ======
 async function ensureStructure(guild) {
-
-  let activeCat = guild.channels.cache.find(
-    c => c.name === 'collabs-active' && c.type === ChannelType.GuildCategory
-  );
-  let closedCat = guild.channels.cache.find(
-    c => c.name === 'collabs-closed' && c.type === ChannelType.GuildCategory
-  );
+  let activeCat = guild.channels.cache.find(c => c.name === 'collabs-active' && c.type === ChannelType.GuildCategory);
+  let closedCat = guild.channels.cache.find(c => c.name === 'collabs-closed' && c.type === ChannelType.GuildCategory);
 
   if (!activeCat) activeCat = await guild.channels.create({ name: 'collabs-active', type: ChannelType.GuildCategory });
   if (!closedCat) closedCat = await guild.channels.create({ name: 'collabs-closed', type: ChannelType.GuildCategory });
@@ -70,13 +65,12 @@ const { handleModal }  = require('./interactions/modals');
 // ====== Auto Close Logic ======
 async function autoCloseExpiredCollabs() {
   try {
-    const now = Date.now();
+    const now     = Date.now();
     const expired = db.prepare("SELECT * FROM collabs WHERE status='active' AND deadline <= ?").all(now);
 
     for (const collab of expired) {
       try {
         if (!collab.channel_id) continue;
-
         const channel = await client.channels.fetch(collab.channel_id).catch(() => null);
         if (!channel || !channel.guild) continue;
 
@@ -92,12 +86,8 @@ async function autoCloseExpiredCollabs() {
 
         db.prepare("UPDATE collabs SET status='closed' WHERE id=?").run(collab.id);
 
-        const contestCount = db.prepare(
-          "SELECT COUNT(*) as n FROM submissions WHERE collab_id=? AND contest_link IS NOT NULL AND contest_link!=''"
-        ).get(collab.id).n;
-        const walletCount = db.prepare(
-          "SELECT COUNT(*) as n FROM submissions WHERE collab_id=? AND sheet_link IS NOT NULL AND sheet_link!=''"
-        ).get(collab.id).n;
+        const contestCount = db.prepare("SELECT COUNT(*) as n FROM submissions WHERE collab_id=? AND contest_link IS NOT NULL AND contest_link!=''").get(collab.id).n;
+        const walletCount  = db.prepare("SELECT COUNT(*) as n FROM submissions WHERE collab_id=? AND sheet_link IS NOT NULL AND sheet_link!=''").get(collab.id).n;
 
         if (logs) {
           await logs.send(
@@ -106,10 +96,8 @@ async function autoCloseExpiredCollabs() {
             `💼 Wallet sheets: **${walletCount}**`
           );
         }
-
       } catch (e) { console.error('Auto-close error for collab:', collab.id, e); }
     }
-
   } catch (err) { console.error('Auto-close loop error:', err); }
 }
 
@@ -129,7 +117,7 @@ client.on(buttonHandler.name, (...args) => buttonHandler.execute(...args));
 client.on('interactionCreate', async interaction => {
   try {
 
-    // ── Slash Commands ───────────────────────────────────────────────────────
+    // ── Slash Commands ─────────────────────────────────────────────
     if (interaction.isChatInputCommand()) {
       const command = client.commands.get(interaction.commandName);
       if (!command) return;
@@ -137,12 +125,24 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
-    // ── Dashboard Buttons ────────────────────────────────────────────────────
+    // ── Buttons ────────────────────────────────────────────────────
     if (interaction.isButton()) {
       const id = interaction.customId;
 
-      // Dashboard admin panel buttons
-      if (id.startsWith('dash_') || id.startsWith('dashlist_')) {
+      // Dashboard buttons
+      if (id.startsWith('dash_') || id.startsWith('dashlist_') || id.startsWith('dashBtn_step') || id.startsWith('dashBtn_confirm_') || id.startsWith('dashBtn_cancel_')) {
+        await handleDashboard(interaction);
+        return;
+      }
+
+      // Edit confirm button (save without changing requirements)
+      if (id.startsWith('dashBtn_editConfirm_')) {
+        await handleEditConfirm(interaction);
+        return;
+      }
+
+      // Edit step 2 button
+      if (id.startsWith('dashBtn_editStep2_')) {
         await handleDashboard(interaction);
         return;
       }
@@ -158,32 +158,28 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
-    // ── Select Menus ─────────────────────────────────────────────────────────
+    // ── Select Menus ───────────────────────────────────────────────
     if (interaction.isStringSelectMenu()) {
       const id = interaction.customId;
 
-      // Dashboard select menus
       if (id.startsWith('dashSelect_')) {
         await handleDashboardSelect(interaction);
         return;
       }
 
-      // Original select menus (export, close, tier, community, wallet)
       await handleButton(interaction);
       return;
     }
 
-    // ── Modals ───────────────────────────────────────────────────────────────
+    // ── Modals ─────────────────────────────────────────────────────
     if (interaction.isModalSubmit()) {
       const id = interaction.customId;
 
-      // Dashboard modals
       if (id.startsWith('dashModal_')) {
         await handleDashboardModal(interaction, client, ensureStructure);
         return;
       }
 
-      // Original modals (contestModal, walletModal)
       await handleModal(interaction);
       return;
     }

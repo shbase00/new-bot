@@ -19,7 +19,7 @@ const { buildDashboardEmbed, buildDashboardButtons } = require('../commands/admi
 
 const PAGE_SIZE = 5;
 
-// Temporary in-memory store for multi-step modal data
+// Temporary in-memory store for multi-step flows
 const pendingCollabs = {};
 
 // ═══════════════════════════════════════════════════════════════════
@@ -50,21 +50,83 @@ async function handleDashboard(interaction) {
     return sendCollabList(interaction, filter, page, true);
   }
 
-  // ── Add Collab → Step 1: Basic Info ───────────────────────────
+  // ── Add Collab → Step 1 modal (Basic Info) ─────────────────────
   if (id === 'dash_add_collab') {
     const modal = new ModalBuilder()
       .setCustomId('dashModal_addStep1')
       .setTitle('➕ New Collab — Step 1/3: Basic Info');
 
     modal.addComponents(
-      row(input('collab_name',   'Collab Name',             TextInputStyle.Short,     true)),
-      row(input('collab_desc',   'Description',             TextInputStyle.Paragraph, true)),
-      row(input('collab_supply', 'Supply',                  TextInputStyle.Short,     true,  'e.g. 1000')),
-      row(input('collab_price',  'Price',                   TextInputStyle.Short,     true,  'e.g. 0.05 ETH')),
-      row(input('collab_date',   'Mint Date',               TextInputStyle.Short,     true,  'e.g. Jan 2025')),
+      row(inp('collab_name',   'Collab Name',   TextInputStyle.Short,     true)),
+      row(inp('collab_desc',   'Description',   TextInputStyle.Paragraph, true)),
+      row(inp('collab_supply', 'Supply',         TextInputStyle.Short,     true, 'e.g. 1000')),
+      row(inp('collab_price',  'Price',          TextInputStyle.Short,     true, 'e.g. 0.05 ETH')),
+      row(inp('collab_date',   'Mint Date',      TextInputStyle.Short,     true, 'e.g. Jan 2025')),
     );
 
     return interaction.showModal(modal);
+  }
+
+  // ── Step 2 button clicked → show Step 2 modal (Spots & Time) ──
+  if (id.startsWith('dashBtn_step2_')) {
+    const token = id.replace('dashBtn_step2_', '');
+    if (!pendingCollabs[token]) {
+      return interaction.reply({ content: '❌ Session expired. Please click ➕ Add Collab again.', ephemeral: true });
+    }
+
+    const modal = new ModalBuilder()
+      .setCustomId(`dashModal_addStep2_${token}`)
+      .setTitle('➕ New Collab — Step 2/3: Spots & Time');
+
+    modal.addComponents(
+      row(inp('spots_t1',       'Spots for T1 (optional)',              TextInputStyle.Short, false, 'e.g. 3')),
+      row(inp('spots_t2',       'Spots for T2 (optional)',              TextInputStyle.Short, false, 'e.g. 2')),
+      row(inp('spots_t3',       'Spots for T3 (optional)',              TextInputStyle.Short, false, 'e.g. 1')),
+      row(inp('collab_hours',   'Hours until close',                    TextInputStyle.Short, true,  'e.g. 24')),
+      row(inp('collab_minutes', 'Minutes until close (optional)',       TextInputStyle.Short, false, 'e.g. 30')),
+    );
+
+    return interaction.showModal(modal);
+  }
+
+  // ── Step 3 button clicked → show Step 3 modal (Requirements) ──
+  if (id.startsWith('dashBtn_step3_')) {
+    const token = id.replace('dashBtn_step3_', '');
+    if (!pendingCollabs[token]) {
+      return interaction.reply({ content: '❌ Session expired. Please click ➕ Add Collab again.', ephemeral: true });
+    }
+
+    const modal = new ModalBuilder()
+      .setCustomId(`dashModal_addStep3_${token}`)
+      .setTitle('➕ New Collab — Step 3/3: Requirements');
+
+    modal.addComponents(
+      row(inp('req_follow',  'Follow — X profile link(s)',              TextInputStyle.Paragraph, false, 'https://x.com/user1\nhttps://x.com/user2')),
+      row(inp('req_like',    'Like & Repost — post link',               TextInputStyle.Short,     false, 'https://x.com/user/status/...')),
+      row(inp('req_discord', 'Join Discord — invite link',              TextInputStyle.Short,     false, 'https://discord.gg/...')),
+      row(inp('req_chain',   'Chain (ETH / Base / Monad / BTC / etc.)', TextInputStyle.Short,     false, 'e.g. ETH')),
+      row(inp('req_note',    'Note (optional)',                          TextInputStyle.Paragraph, false, 'Any extra info...')),
+    );
+
+    return interaction.showModal(modal);
+  }
+
+  // ── Confirm & Create button clicked → actually create collab ───
+  if (id.startsWith('dashBtn_confirm_')) {
+    const token = id.replace('dashBtn_confirm_', '');
+    const data  = pendingCollabs[token];
+    if (!data || !data.ready) {
+      return interaction.reply({ content: '❌ Session expired. Please click ➕ Add Collab again.', ephemeral: true });
+    }
+    await interaction.deferReply({ ephemeral: true });
+    return createCollab(interaction, data, token);
+  }
+
+  // ── Cancel button clicked ──────────────────────────────────────
+  if (id.startsWith('dashBtn_cancel_')) {
+    const token = id.replace('dashBtn_cancel_', '');
+    delete pendingCollabs[token];
+    return interaction.update({ content: '❌ Collab creation cancelled.', embeds: [], components: [] });
   }
 
   // ── Edit Collab ────────────────────────────────────────────────
@@ -85,6 +147,32 @@ async function handleDashboard(interaction) {
       components: [new ActionRowBuilder().addComponents(select)],
       ephemeral: true,
     });
+  }
+
+  // ── Edit Step 2 button → show requirements modal ──────────────
+  if (id.startsWith('dashBtn_editStep2_')) {
+    const token = id.replace('dashBtn_editStep2_', '');
+    const data  = pendingCollabs[token];
+    if (!data) return interaction.reply({ content: '❌ Session expired. Please try again.', ephemeral: true });
+
+    // Load existing requirements to pre-fill
+    const collab = db.prepare(`SELECT requirements FROM collabs WHERE id=?`).get(data.id);
+    let ex = { follow: '', like_repost: '', discord: '', chain: '', note: '' };
+    try { ex = { ...ex, ...JSON.parse(collab?.requirements) }; } catch (e) {}
+
+    const modal = new ModalBuilder()
+      .setCustomId(`dashModal_editStep2_${token}`)
+      .setTitle(`✏️ Edit Requirements — 2/2`);
+
+    modal.addComponents(
+      row(inp('req_follow',  'Follow — X profile link(s)',              TextInputStyle.Paragraph, false, ex.follow      || '')),
+      row(inp('req_like',    'Like & Repost — post link',               TextInputStyle.Short,     false, ex.like_repost || '')),
+      row(inp('req_discord', 'Join Discord — invite link',              TextInputStyle.Short,     false, ex.discord     || '')),
+      row(inp('req_chain',   'Chain (ETH / Base / Monad / BTC / etc.)', TextInputStyle.Short,     false, ex.chain       || '')),
+      row(inp('req_note',    'Note (optional)',                          TextInputStyle.Paragraph, false, ex.note        || '')),
+    );
+
+    return interaction.showModal(modal);
   }
 
   // ── Close Collab ───────────────────────────────────────────────
@@ -149,11 +237,9 @@ async function handleDashboard(interaction) {
     await interaction.deferReply({ ephemeral: true });
     const fs = require('fs');
     const DB_PATH = process.env.DB_PATH || '/data/collabs.db';
-
     if (!fs.existsSync(DB_PATH)) {
       return interaction.editReply({ content: `❌ Database file not found at: ${DB_PATH}` });
     }
-
     const buf = fs.readFileSync(DB_PATH);
     const attachment = new AttachmentBuilder(buf, { name: `collabs_backup_${dateStamp()}.db` });
     return interaction.editReply({
@@ -208,42 +294,25 @@ async function handleDashboardSelect(interaction) {
     });
   }
 
-  // ── Edit Collab — open edit modal with current values ──────────
+  // ── Edit Collab Step 1 — open basic info modal ─────────────────
   if (id === 'dashSelect_editCollab') {
     const collabId = interaction.values[0];
-    const collab = db.prepare(`SELECT * FROM collabs WHERE id=?`).get(collabId);
+    const collab   = db.prepare(`SELECT * FROM collabs WHERE id=?`).get(collabId);
     if (!collab) return interaction.update({ content: '❌ Not found.', components: [] });
 
-    // Parse stored requirements
-    let reqParsed = { follow: '', like_repost: '', discord: '', chain: '', note: '' };
-    try {
-      const r = JSON.parse(collab.requirements);
-      reqParsed = { ...reqParsed, ...r };
-    } catch (e) {
-      reqParsed.note = collab.requirements || '';
-    }
-
-    // Store collab data for step 2 of edit
     const token = `e${String(Date.now()).slice(-6)}`;
-    pendingCollabs[token] = {
-      id: collabId,
-      name: collab.name,
-      supply: collab.supply,
-      price: collab.price,
-      spots: collab.spots,
-      date: collab.date,
-    };
+    pendingCollabs[token] = { id: collabId };
 
     const modal = new ModalBuilder()
       .setCustomId(`dashModal_editStep1_${token}`)
-      .setTitle(`✏️ Edit: ${collab.name.slice(0, 25)} — 1/2`);
+      .setTitle(`✏️ Edit: ${collab.name.slice(0, 28)} — 1/2`);
 
     modal.addComponents(
-      row(input('edit_name',   'Collab Name',                    TextInputStyle.Short,     true,  collab.name        || '')),
-      row(input('edit_desc',   'Description',                    TextInputStyle.Paragraph, true,  collab.description || '')),
-      row(input('edit_supply', 'Supply',                         TextInputStyle.Short,     false, collab.supply      || '')),
-      row(input('edit_price',  'Price',                          TextInputStyle.Short,     false, collab.price       || '')),
-      row(input('edit_spots',  'Spots (e.g. T1:3 | T2:2 | T3:1)', TextInputStyle.Short,   false, collab.spots       || '')),
+      row(inp('edit_name',   'Collab Name',                       TextInputStyle.Short,     true,  collab.name        || '')),
+      row(inp('edit_desc',   'Description',                       TextInputStyle.Paragraph, true,  collab.description || '')),
+      row(inp('edit_supply', 'Supply',                            TextInputStyle.Short,     false, collab.supply      || '')),
+      row(inp('edit_price',  'Price',                             TextInputStyle.Short,     false, collab.price       || '')),
+      row(inp('edit_spots',  'Spots (e.g. T1:3 | T2:2 | T3:1)',  TextInputStyle.Short,     false, collab.spots       || '')),
     );
 
     return interaction.showModal(modal);
@@ -253,7 +322,7 @@ async function handleDashboardSelect(interaction) {
   if (id === 'dashSelect_collabInfo') {
     await interaction.deferUpdate();
     const collabId = interaction.values[0];
-    const collab = db.prepare(`SELECT * FROM collabs WHERE id=?`).get(collabId);
+    const collab   = db.prepare(`SELECT * FROM collabs WHERE id=?`).get(collabId);
     if (!collab) return interaction.editReply({ content: '❌ Not found.', components: [] });
 
     const subCount = db.prepare(`SELECT COUNT(*) as c FROM submissions WHERE collab_id=?`).get(collabId).c;
@@ -262,7 +331,6 @@ async function handleDashboardSelect(interaction) {
     const statusEmoji  = collab.status === 'active' ? '🟢' : '🔴';
     const deadlineText = collab.deadline ? `<t:${Math.floor(collab.deadline / 1000)}:F>` : 'N/A';
 
-    // Parse requirements
     let followText = '—', likeText = '—', discordText = '—', chainText = '—', noteText = '—';
     try {
       const r = JSON.parse(collab.requirements);
@@ -271,34 +339,31 @@ async function handleDashboardSelect(interaction) {
       if (r.discord)     discordText = r.discord;
       if (r.chain)       chainText   = r.chain;
       if (r.note)        noteText    = r.note;
-    } catch (e) {
-      noteText = collab.requirements || '—';
-    }
+    } catch (e) { noteText = collab.requirements || '—'; }
 
     const embed = new EmbedBuilder()
       .setTitle(`${statusEmoji} ${collab.name}`)
       .setColor(collab.status === 'active' ? 0x57F287 : 0xED4245)
       .setTimestamp()
       .addFields(
-        { name: '📋 Description',    value: collab.description || '—', inline: false },
-        { name: '🎯 Status',          value: `${statusEmoji} ${collab.status}`, inline: true },
-        { name: '📦 Supply',          value: String(collab.supply || '—'), inline: true },
-        { name: '💰 Price',           value: collab.price || '—', inline: true },
-        { name: '🎟️ Spots',           value: String(collab.spots || '—'), inline: true },
-        { name: '🗓 Mint Date',       value: collab.date || '—', inline: true },
-        { name: '⛓️ Chain',           value: chainText, inline: true },
-        { name: '⏰ Deadline',        value: deadlineText, inline: false },
-        { name: '📝 Submissions',     value: String(subCount), inline: true },
-        { name: '💰 Wallet Sheets',   value: String(walCount), inline: true },
-        { name: '👤 Follow',          value: followText, inline: false },
-        { name: '❤️ Like & Repost',   value: likeText, inline: false },
-        { name: '💬 Join Discord',    value: discordText, inline: false },
-        { name: '📌 Note',            value: noteText, inline: false },
+        { name: '📋 Description',   value: collab.description || '—', inline: false },
+        { name: '🎯 Status',         value: `${statusEmoji} ${collab.status}`, inline: true },
+        { name: '📦 Supply',         value: String(collab.supply || '—'), inline: true },
+        { name: '💰 Price',          value: collab.price || '—', inline: true },
+        { name: '🎟️ Spots',          value: String(collab.spots || '—'), inline: true },
+        { name: '🗓 Mint Date',      value: collab.date || '—', inline: true },
+        { name: '⛓️ Chain',          value: chainText, inline: true },
+        { name: '⏰ Deadline',       value: deadlineText, inline: false },
+        { name: '📝 Submissions',    value: String(subCount), inline: true },
+        { name: '💰 Wallet Sheets',  value: String(walCount), inline: true },
+        { name: '👤 Follow',         value: followText, inline: false },
+        { name: '❤️ Like & Repost',  value: likeText, inline: false },
+        { name: '💬 Join Discord',   value: discordText, inline: false },
+        { name: '📌 Note',           value: noteText, inline: false },
       )
       .setFooter({ text: `ID: ${collab.id}` });
 
     if (collab.image) embed.setThumbnail(collab.image);
-
     return interaction.editReply({ embeds: [embed], components: [] });
   }
 
@@ -331,229 +396,163 @@ async function handleDashboardSelect(interaction) {
 async function handleDashboardModal(interaction, client, ensureStructure) {
   const id = interaction.customId;
 
-  // ── ADD STEP 1 submitted → show Step 2: Spots + Time ──────────
+  // ── ADD Step 1 submitted → show Step 2 button prompt ──────────
   if (id === 'dashModal_addStep1') {
-    const name   = interaction.fields.getTextInputValue('collab_name').trim();
-    const desc   = interaction.fields.getTextInputValue('collab_desc').trim();
-    const supply = interaction.fields.getTextInputValue('collab_supply').trim();
-    const price  = interaction.fields.getTextInputValue('collab_price').trim();
-    const date   = interaction.fields.getTextInputValue('collab_date').trim();
+    await interaction.deferReply({ ephemeral: true });
 
-    const token = String(Date.now()).slice(-6);
-    pendingCollabs[token] = { name, desc, supply, price, date };
+    const token = String(Date.now()).slice(-8);
+    pendingCollabs[token] = {
+      name:   interaction.fields.getTextInputValue('collab_name').trim(),
+      desc:   interaction.fields.getTextInputValue('collab_desc').trim(),
+      supply: interaction.fields.getTextInputValue('collab_supply').trim(),
+      price:  interaction.fields.getTextInputValue('collab_price').trim(),
+      date:   interaction.fields.getTextInputValue('collab_date').trim(),
+    };
 
-    const modal = new ModalBuilder()
-      .setCustomId(`dashModal_addStep2_${token}`)
-      .setTitle('➕ New Collab — Step 2/3: Spots & Time');
-
-    modal.addComponents(
-      row(input('spots_t1',      'Spots for T1',                       TextInputStyle.Short, false, 'e.g. 3  (leave empty if none)')),
-      row(input('spots_t2',      'Spots for T2',                       TextInputStyle.Short, false, 'e.g. 2  (leave empty if none)')),
-      row(input('spots_t3',      'Spots for T3',                       TextInputStyle.Short, false, 'e.g. 1  (leave empty if none)')),
-      row(input('collab_hours',  'Hours until close',                  TextInputStyle.Short, true,  'e.g. 24  (enter 0 for minutes only)')),
-      row(input('collab_minutes','Minutes until close (optional)',      TextInputStyle.Short, false, 'e.g. 30')),
-    );
-
-    return interaction.showModal(modal);
+    return interaction.editReply({
+      content: `✅ **Step 1 saved!**\n\n📋 **${pendingCollabs[token].name}**\nNow click the button below to fill in **Spots & Time**:`,
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`dashBtn_step2_${token}`)
+          .setLabel('➡️ Continue to Step 2: Spots & Time')
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId(`dashBtn_cancel_${token}`)
+          .setLabel('✖ Cancel')
+          .setStyle(ButtonStyle.Secondary),
+      )],
+    });
   }
 
-  // ── ADD STEP 2 submitted → show Step 3: Requirements ──────────
+  // ── ADD Step 2 submitted → show Step 3 button prompt ──────────
   if (id.startsWith('dashModal_addStep2_')) {
+    await interaction.deferReply({ ephemeral: true });
+
     const token = id.replace('dashModal_addStep2_', '');
     if (!pendingCollabs[token]) {
-      return interaction.reply({ content: '❌ Session expired. Please click ➕ Add Collab again.', ephemeral: true });
+      return interaction.editReply('❌ Session expired. Please click ➕ Add Collab again.');
     }
 
-    const spotsT1   = interaction.fields.getTextInputValue('spots_t1').trim();
-    const spotsT2   = interaction.fields.getTextInputValue('spots_t2').trim();
-    const spotsT3   = interaction.fields.getTextInputValue('spots_t3').trim();
-    const hours     = parseInt(interaction.fields.getTextInputValue('collab_hours').trim(), 10) || 0;
-    const minutes   = parseInt((interaction.fields.getTextInputValue('collab_minutes').trim()) || '0', 10) || 0;
+    const hours   = parseInt(interaction.fields.getTextInputValue('collab_hours').trim(), 10) || 0;
+    const minutes = parseInt(interaction.fields.getTextInputValue('collab_minutes').trim() || '0', 10) || 0;
 
     if (hours === 0 && minutes === 0) {
-      delete pendingCollabs[token];
-      return interaction.reply({ content: '❌ Hours and minutes cannot both be 0.', ephemeral: true });
+      return interaction.editReply('❌ Hours and minutes cannot both be 0. Please go back and try again.');
     }
 
-    // Build spots text — only include tiers that have a value
+    const spotsT1 = interaction.fields.getTextInputValue('spots_t1').trim();
+    const spotsT2 = interaction.fields.getTextInputValue('spots_t2').trim();
+    const spotsT3 = interaction.fields.getTextInputValue('spots_t3').trim();
+
     const spotsParts = [];
     if (spotsT1) spotsParts.push(`T1: ${spotsT1}`);
     if (spotsT2) spotsParts.push(`T2: ${spotsT2}`);
     if (spotsT3) spotsParts.push(`T3: ${spotsT3}`);
-    const spotsText = spotsParts.length ? spotsParts.join(' | ') : 'TBA';
 
-    // Save to pending and show step 3
-    pendingCollabs[token].spots   = spotsText;
+    pendingCollabs[token].spots   = spotsParts.length ? spotsParts.join(' | ') : 'TBA';
     pendingCollabs[token].hours   = hours;
     pendingCollabs[token].minutes = minutes;
 
-    const modal = new ModalBuilder()
-      .setCustomId(`dashModal_addStep3_${token}`)
-      .setTitle('➕ New Collab — Step 3/3: Requirements');
+    const timeText = [hours ? `${hours}h` : '', minutes ? `${minutes}m` : ''].filter(Boolean).join(' ');
 
-    modal.addComponents(
-      row(input('req_follow',   'Follow — X profile link(s)',          TextInputStyle.Paragraph, false, 'e.g. https://x.com/user1\nhttps://x.com/user2')),
-      row(input('req_like',     'Like & Repost — post link',           TextInputStyle.Short,     false, 'e.g. https://x.com/user/status/...')),
-      row(input('req_discord',  'Join Discord — invite link',          TextInputStyle.Short,     false, 'e.g. https://discord.gg/...')),
-      row(input('req_chain',    'Chain (e.g. ETH / Base / Monad / BTC)', TextInputStyle.Short,   false, 'e.g. ETH')),
-      row(input('req_note',     'Note (optional)',                      TextInputStyle.Paragraph, false, 'Any extra info...')),
-    );
-
-    return interaction.showModal(modal);
+    return interaction.editReply({
+      content: `✅ **Step 2 saved!**\n🎟️ Spots: **${pendingCollabs[token].spots}**\n⏰ Closes in: **${timeText}**\n\nNow click the button below to fill in **Requirements** (all optional):`,
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`dashBtn_step3_${token}`)
+          .setLabel('➡️ Continue to Step 3: Requirements')
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId(`dashBtn_confirm_${token}`)
+          .setLabel('✅ Skip & Create Now')
+          .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId(`dashBtn_cancel_${token}`)
+          .setLabel('✖ Cancel')
+          .setStyle(ButtonStyle.Secondary),
+      )],
+    });
   }
 
-  // ── ADD STEP 3 submitted → create the collab ──────────────────
+  // ── ADD Step 3 submitted → show confirm button ─────────────────
   if (id.startsWith('dashModal_addStep3_')) {
     await interaction.deferReply({ ephemeral: true });
 
-    try {
-      const token = id.replace('dashModal_addStep3_', '');
-      const data  = pendingCollabs[token];
-
-      if (!data) {
-        return interaction.editReply('❌ Session expired. Please click ➕ Add Collab again.');
-      }
-
-      delete pendingCollabs[token];
-
-      const follow  = interaction.fields.getTextInputValue('req_follow').trim();
-      const like    = interaction.fields.getTextInputValue('req_like').trim();
-      const discord = interaction.fields.getTextInputValue('req_discord').trim();
-      const chain   = interaction.fields.getTextInputValue('req_chain').trim();
-      const note    = interaction.fields.getTextInputValue('req_note').trim();
-
-      const requirements = JSON.stringify({
-        follow:      follow  || null,
-        like_repost: like    || null,
-        discord:     discord || null,
-        chain:       chain   || null,
-        note:        note    || null,
-      });
-
-      const deadline     = Date.now() + (data.hours * 3600000) + (data.minutes * 60000);
-      const deadlineUnix = Math.floor(deadline / 1000);
-      const relativeTime = `<t:${deadlineUnix}:R>`;
-
-      const guild = interaction.guild;
-      const { activeCat } = await ensureStructure(guild);
-
-      const slug = data.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9\-]/g, '');
-
-      const channel = await guild.channels.create({
-        name: `🟢-${slug}`,
-        type: ChannelType.GuildText,
-        parent: activeCat.id,
-        permissionOverwrites: [{
-          id: guild.roles.everyone.id,
-          deny: [PermissionsBitField.Flags.SendMessages],
-        }],
-      });
-
-      const result = db.prepare(
-        `INSERT INTO collabs (name, description, supply, date, price, spots, requirements, note, image, deadline, channel_id, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      ).run(
-        data.name, data.desc, data.supply, data.date,
-        data.price, data.spots, requirements,
-        note || '—', null, deadline, channel.id, 'active'
-      );
-
-      const collabId = result.lastInsertRowid;
-
-      // Build requirements display text for the embed
-      const reqLines = [];
-      if (follow)  reqLines.push(`👤 **Follow:**\n${follow}`);
-      if (like)    reqLines.push(`❤️ **Like & Repost:** ${like}`);
-      if (discord) reqLines.push(`💬 **Join Discord:** ${discord}`);
-      if (chain)   reqLines.push(`⛓️ **Chain:** ${chain}`);
-      const reqText = reqLines.length ? reqLines.join('\n') : '—';
-
-      const btnRow = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`contest_${collabId}`).setLabel('🟢 Submit Contest Link').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId(`wallet_${collabId}`).setLabel('📄 Submit Wallet Sheet').setStyle(ButtonStyle.Primary),
-      );
-
-      const embed = new EmbedBuilder()
-        .setTitle(`🔥 ${data.name}`)
-        .setDescription(data.desc)
-        .addFields(
-          { name: '⏳ Ends',           value: relativeTime,  inline: true  },
-          { name: '📦 Supply',         value: data.supply,   inline: true  },
-          { name: '💰 Price',          value: data.price,    inline: true  },
-          { name: '🗓 Date',           value: data.date,     inline: true  },
-          { name: '⛓️ Chain',          value: chain || '—',  inline: true  },
-          { name: '🎟️ Spots',          value: data.spots,    inline: false },
-          { name: '✅ Requirements',   value: reqText,       inline: false },
-        );
-
-      if (note) embed.addFields({ name: '📌 Note', value: note, inline: false });
-      embed.setTimestamp();
-
-      await channel.send({ content: 'Use the buttons below to submit:', embeds: [embed], components: [btnRow] });
-
-      const ann = guild.channels.cache.find(c => c.name === 'collabs-announcements');
-      if (ann) await ann.send({
-        content: `📢 New Collab: **${data.name}** → ${channel}\n⏳ Ends ${relativeTime}`,
-        embeds: [embed],
-      });
-
-      const logs = guild.channels.cache.find(c => c.name === 'logs');
-      if (logs) await logs.send(`🟢 Collab Created: **${data.name}** | Channel: ${channel} | Ends ${relativeTime}`);
-
-      await interaction.editReply(
-        `✅ Collab **${data.name}** created! → ${channel}\n` +
-        `🎟️ Spots: ${data.spots}\n` +
-        `⛓️ Chain: ${chain || '—'}`
-      );
-
-    } catch (err) {
-      console.error('[dashModal_addStep3] Error:', err);
-      await interaction.editReply(`❌ Error: ${err.message}`);
+    const token = id.replace('dashModal_addStep3_', '');
+    if (!pendingCollabs[token]) {
+      return interaction.editReply('❌ Session expired. Please click ➕ Add Collab again.');
     }
+
+    pendingCollabs[token].follow  = interaction.fields.getTextInputValue('req_follow').trim();
+    pendingCollabs[token].like    = interaction.fields.getTextInputValue('req_like').trim();
+    pendingCollabs[token].discord = interaction.fields.getTextInputValue('req_discord').trim();
+    pendingCollabs[token].chain   = interaction.fields.getTextInputValue('req_chain').trim();
+    pendingCollabs[token].note    = interaction.fields.getTextInputValue('req_note').trim();
+    pendingCollabs[token].ready   = true;
+
+    const d = pendingCollabs[token];
+    const summaryLines = [
+      `📋 **${d.name}**`,
+      `📦 Supply: ${d.supply} | 💰 Price: ${d.price}`,
+      `🎟️ Spots: ${d.spots}`,
+      `⛓️ Chain: ${d.chain || '—'}`,
+      d.follow  ? `👤 Follow: ${d.follow.split('\n')[0]}${d.follow.includes('\n') ? ' (+ more)' : ''}` : '',
+      d.like    ? `❤️ Like & Repost: set` : '',
+      d.discord ? `💬 Discord: set` : '',
+      d.note    ? `📌 Note: ${d.note.slice(0, 60)}` : '',
+    ].filter(Boolean).join('\n');
+
+    return interaction.editReply({
+      content: `✅ **Step 3 saved! Ready to create:**\n\n${summaryLines}\n\nClick **Create Collab** to finish:`,
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`dashBtn_confirm_${token}`)
+          .setLabel('🚀 Create Collab')
+          .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId(`dashBtn_cancel_${token}`)
+          .setLabel('✖ Cancel')
+          .setStyle(ButtonStyle.Secondary),
+      )],
+    });
   }
 
-  // ── EDIT STEP 1 submitted → show Step 2: Requirements ─────────
+  // ── EDIT Step 1 submitted → show Step 2 button ────────────────
   if (id.startsWith('dashModal_editStep1_')) {
-    const token  = id.replace('dashModal_editStep1_', '');
-    const stored = pendingCollabs[token];
-    if (!stored) return interaction.reply({ content: '❌ Session expired. Please try again.', ephemeral: true });
+    await interaction.deferReply({ ephemeral: true });
 
-    const name   = interaction.fields.getTextInputValue('edit_name').trim();
-    const desc   = interaction.fields.getTextInputValue('edit_desc').trim();
-    const supply = interaction.fields.getTextInputValue('edit_supply').trim();
-    const price  = interaction.fields.getTextInputValue('edit_price').trim();
-    const spots  = interaction.fields.getTextInputValue('edit_spots').trim();
+    const token = id.replace('dashModal_editStep1_', '');
+    if (!pendingCollabs[token]) return interaction.editReply('❌ Session expired.');
 
-    pendingCollabs[token] = { ...stored, name, desc, supply, price, spots };
+    pendingCollabs[token].name   = interaction.fields.getTextInputValue('edit_name').trim();
+    pendingCollabs[token].desc   = interaction.fields.getTextInputValue('edit_desc').trim();
+    pendingCollabs[token].supply = interaction.fields.getTextInputValue('edit_supply').trim();
+    pendingCollabs[token].price  = interaction.fields.getTextInputValue('edit_price').trim();
+    pendingCollabs[token].spots  = interaction.fields.getTextInputValue('edit_spots').trim();
 
-    // Load existing requirements to pre-fill
-    const collab = db.prepare(`SELECT requirements FROM collabs WHERE id=?`).get(stored.id);
-    let existing = { follow: '', like_repost: '', discord: '', chain: '', note: '' };
-    try { existing = { ...existing, ...JSON.parse(collab.requirements) }; } catch (e) {}
-
-    const modal = new ModalBuilder()
-      .setCustomId(`dashModal_editStep2_${token}`)
-      .setTitle(`✏️ Edit: ${name.slice(0, 25)} — 2/2`);
-
-    modal.addComponents(
-      row(input('req_follow',  'Follow — X profile link(s)',           TextInputStyle.Paragraph, false, existing.follow      || '')),
-      row(input('req_like',    'Like & Repost — post link',            TextInputStyle.Short,     false, existing.like_repost || '')),
-      row(input('req_discord', 'Join Discord — invite link',           TextInputStyle.Short,     false, existing.discord     || '')),
-      row(input('req_chain',   'Chain (e.g. ETH / Base / Monad / BTC)',TextInputStyle.Short,     false, existing.chain       || '')),
-      row(input('req_note',    'Note (optional)',                       TextInputStyle.Paragraph, false, existing.note        || '')),
-    );
-
-    return interaction.showModal(modal);
+    return interaction.editReply({
+      content: `✅ **Basic info saved!**\nNow click below to edit **Requirements** (or skip to save as-is):`,
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`dashBtn_editStep2_${token}`)
+          .setLabel('➡️ Edit Requirements')
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId(`dashBtn_editConfirm_${token}`)
+          .setLabel('✅ Save Without Changing Requirements')
+          .setStyle(ButtonStyle.Success),
+      )],
+    });
   }
 
-  // ── EDIT STEP 2 submitted → save all changes ──────────────────
+  // ── EDIT Step 2 submitted → save everything ────────────────────
   if (id.startsWith('dashModal_editStep2_')) {
     await interaction.deferReply({ ephemeral: true });
 
     try {
-      const token  = id.replace('dashModal_editStep2_', '');
-      const data   = pendingCollabs[token];
-      if (!data) return interaction.editReply('❌ Session expired. Please try again.');
+      const token = id.replace('dashModal_editStep2_', '');
+      const data  = pendingCollabs[token];
+      if (!data) return interaction.editReply('❌ Session expired.');
       delete pendingCollabs[token];
 
       const follow  = interaction.fields.getTextInputValue('req_follow').trim();
@@ -562,54 +561,165 @@ async function handleDashboardModal(interaction, client, ensureStructure) {
       const chain   = interaction.fields.getTextInputValue('req_chain').trim();
       const note    = interaction.fields.getTextInputValue('req_note').trim();
 
-      const requirements = JSON.stringify({
-        follow:      follow  || null,
-        like_repost: like    || null,
-        discord:     discord || null,
-        chain:       chain   || null,
-        note:        note    || null,
-      });
-
-      const collab = db.prepare(`SELECT * FROM collabs WHERE id=?`).get(data.id);
-
-      db.prepare(
-        `UPDATE collabs SET name=?, description=?, supply=?, price=?, spots=?, date=?, requirements=?, note=? WHERE id=?`
-      ).run(
-        data.name, data.desc,
-        data.supply || collab.supply,
-        data.price  || collab.price,
-        data.spots  || collab.spots,
-        data.date   || collab.date,
-        requirements,
-        note || '—',
-        data.id
-      );
-
-      // Rename channel if name changed
-      if (data.name !== collab.name && collab.channel_id) {
-        const ch = await interaction.guild.channels.fetch(collab.channel_id).catch(() => null);
-        if (ch) {
-          const prefix  = collab.status === 'active' ? '🟢-' : '🔴-';
-          const newSlug = data.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9\-]/g, '');
-          await ch.setName(`${prefix}${newSlug}`).catch(() => {});
-        }
-      }
-
-      const logs = interaction.guild.channels.cache.find(c => c.name === 'logs');
-      if (logs) await logs.send(`✏️ **Collab Edited:** ${data.name} (ID: ${data.id})`);
-
-      await interaction.editReply(
-        `✅ **${data.name}** updated!\n` +
-        `📦 Supply: ${data.supply || collab.supply}\n` +
-        `💰 Price: ${data.price || collab.price}\n` +
-        `🎟️ Spots: ${data.spots || collab.spots}\n` +
-        `⛓️ Chain: ${chain || '—'}`
-      );
-
+      return saveEdit(interaction, data, { follow, like, discord, chain, note });
     } catch (err) {
-      console.error('[dashModal_editStep2] Error:', err);
+      console.error('[editStep2] Error:', err);
       await interaction.editReply(`❌ Error: ${err.message}`);
     }
+  }
+}
+
+// ── Handle edit confirm button (save without changing requirements)
+async function handleEditConfirm(interaction) {
+  const token = interaction.customId.replace('dashBtn_editConfirm_', '');
+  const data  = pendingCollabs[token];
+  if (!data) return interaction.reply({ content: '❌ Session expired.', ephemeral: true });
+  delete pendingCollabs[token];
+
+  await interaction.deferReply({ ephemeral: true });
+
+  // Load existing requirements unchanged
+  const collab = db.prepare(`SELECT requirements FROM collabs WHERE id=?`).get(data.id);
+  let ex = { follow: null, like_repost: null, discord: null, chain: null, note: null };
+  try { ex = { ...ex, ...JSON.parse(collab?.requirements) }; } catch (e) {}
+
+  return saveEdit(interaction, data, {
+    follow: ex.follow, like: ex.like_repost, discord: ex.discord, chain: ex.chain, note: ex.note,
+  });
+}
+
+// ── Shared save edit logic ─────────────────────────────────────────
+async function saveEdit(interaction, data, req) {
+  const collab = db.prepare(`SELECT * FROM collabs WHERE id=?`).get(data.id);
+  if (!collab) return interaction.editReply('❌ Collab not found.');
+
+  const requirements = JSON.stringify({
+    follow:      req.follow  || null,
+    like_repost: req.like    || null,
+    discord:     req.discord || null,
+    chain:       req.chain   || null,
+    note:        req.note    || null,
+  });
+
+  db.prepare(
+    `UPDATE collabs SET name=?, description=?, supply=?, price=?, spots=?, requirements=?, note=? WHERE id=?`
+  ).run(
+    data.name   || collab.name,
+    data.desc   || collab.description,
+    data.supply || collab.supply,
+    data.price  || collab.price,
+    data.spots  || collab.spots,
+    requirements,
+    req.note || '—',
+    data.id
+  );
+
+  // Rename channel if name changed
+  if (data.name && data.name !== collab.name && collab.channel_id) {
+    const ch = await interaction.guild.channels.fetch(collab.channel_id).catch(() => null);
+    if (ch) {
+      const prefix  = collab.status === 'active' ? '🟢-' : '🔴-';
+      const newSlug = data.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9\-]/g, '');
+      await ch.setName(`${prefix}${newSlug}`).catch(() => {});
+    }
+  }
+
+  const logs = interaction.guild.channels.cache.find(c => c.name === 'logs');
+  if (logs) await logs.send(`✏️ **Collab Edited:** ${data.name || collab.name} (ID: ${data.id})`);
+
+  await interaction.editReply(`✅ **${data.name || collab.name}** updated successfully!`);
+}
+
+// ── Create collab (called after confirm button) ────────────────────
+async function createCollab(interaction, data, token) {
+  try {
+    delete pendingCollabs[token];
+
+    const requirements = JSON.stringify({
+      follow:      data.follow  || null,
+      like_repost: data.like    || null,
+      discord:     data.discord || null,
+      chain:       data.chain   || null,
+      note:        data.note    || null,
+    });
+
+    const deadline     = Date.now() + ((data.hours || 0) * 3600000) + ((data.minutes || 0) * 60000);
+    const deadlineUnix = Math.floor(deadline / 1000);
+    const relativeTime = `<t:${deadlineUnix}:R>`;
+
+    const guild = interaction.guild;
+
+    // Get or create active category
+    let activeCat = guild.channels.cache.find(c => c.name === 'collabs-active' && c.type === ChannelType.GuildCategory);
+    if (!activeCat) activeCat = await guild.channels.create({ name: 'collabs-active', type: ChannelType.GuildCategory });
+
+    const slug = data.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9\-]/g, '');
+
+    const channel = await guild.channels.create({
+      name: `🟢-${slug}`,
+      type: ChannelType.GuildText,
+      parent: activeCat.id,
+      permissionOverwrites: [{
+        id: guild.roles.everyone.id,
+        deny: [PermissionsBitField.Flags.SendMessages],
+      }],
+    });
+
+    const result = db.prepare(
+      `INSERT INTO collabs (name, description, supply, date, price, spots, requirements, note, image, deadline, channel_id, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      data.name, data.desc, data.supply, data.date,
+      data.price, data.spots || 'TBA', requirements,
+      data.note || '—', null, deadline, channel.id, 'active'
+    );
+
+    const collabId = result.lastInsertRowid;
+
+    // Build requirements text for embed
+    const reqLines = [];
+    if (data.follow)  reqLines.push(`👤 **Follow:**\n${data.follow}`);
+    if (data.like)    reqLines.push(`❤️ **Like & Repost:** ${data.like}`);
+    if (data.discord) reqLines.push(`💬 **Join Discord:** ${data.discord}`);
+    if (data.chain)   reqLines.push(`⛓️ **Chain:** ${data.chain}`);
+    const reqText = reqLines.length ? reqLines.join('\n') : '—';
+
+    const btnRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`contest_${collabId}`).setLabel('🟢 Submit Contest Link').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`wallet_${collabId}`).setLabel('📄 Submit Wallet Sheet').setStyle(ButtonStyle.Primary),
+    );
+
+    const embed = new EmbedBuilder()
+      .setTitle(`🔥 ${data.name}`)
+      .setDescription(data.desc)
+      .addFields(
+        { name: '⏳ Ends',          value: relativeTime,          inline: true  },
+        { name: '📦 Supply',        value: data.supply,           inline: true  },
+        { name: '💰 Price',         value: data.price,            inline: true  },
+        { name: '🗓 Date',          value: data.date,             inline: true  },
+        { name: '⛓️ Chain',         value: data.chain   || '—',   inline: true  },
+        { name: '🎟️ Spots',         value: data.spots   || 'TBA', inline: false },
+        { name: '✅ Requirements',  value: reqText,               inline: false },
+      )
+      .setTimestamp();
+
+    if (data.note) embed.addFields({ name: '📌 Note', value: data.note, inline: false });
+
+    await channel.send({ content: 'Use the buttons below to submit:', embeds: [embed], components: [btnRow] });
+
+    const ann = guild.channels.cache.find(c => c.name === 'collabs-announcements');
+    if (ann) await ann.send({ content: `📢 New Collab: **${data.name}** → ${channel}\n⏳ Ends ${relativeTime}`, embeds: [embed] });
+
+    const logs = guild.channels.cache.find(c => c.name === 'logs');
+    if (logs) await logs.send(`🟢 Collab Created: **${data.name}** | Channel: ${channel} | Ends ${relativeTime}`);
+
+    await interaction.editReply(
+      `✅ Collab **${data.name}** created! → ${channel}\n🎟️ Spots: ${data.spots || 'TBA'} | ⛓️ Chain: ${data.chain || '—'}`
+    );
+
+  } catch (err) {
+    console.error('[createCollab] Error:', err);
+    await interaction.editReply(`❌ Error creating collab: ${err.message}`);
   }
 }
 
@@ -640,35 +750,20 @@ async function sendCollabList(interaction, filter, page, isUpdate = false) {
     embed.setDescription('No collabs found.');
   } else {
     for (const c of pageRows) {
-      // Parse chain from requirements
       let chain = '';
       try { chain = JSON.parse(c.requirements)?.chain || ''; } catch (e) {}
-
       const dl = c.deadline ? `⏰ <t:${Math.floor(c.deadline / 1000)}:R>` : '⏰ No deadline';
       embed.addFields({
         name: `${filter === 'active' ? '🟢' : '🔴'} ${c.name}`,
-        value: [
-          dl,
-          `🎟️ ${c.spots || 'N/A'}`,
-          chain ? `⛓️ ${chain}` : '',
-          `ID: \`${c.id}\``,
-        ].filter(Boolean).join('  •  '),
+        value: [dl, `🎟️ ${c.spots || 'N/A'}`, chain ? `⛓️ ${chain}` : '', `ID: \`${c.id}\``].filter(Boolean).join('  •  '),
         inline: false,
       });
     }
   }
 
   const navRow = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`dashlist_prev_${filter}_${page}`)
-      .setLabel('◀ Previous')
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(page === 0),
-    new ButtonBuilder()
-      .setCustomId(`dashlist_next_${filter}_${page}`)
-      .setLabel('Next ▶')
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(page >= totalPages - 1),
+    new ButtonBuilder().setCustomId(`dashlist_prev_${filter}_${page}`).setLabel('◀ Previous').setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
+    new ButtonBuilder().setCustomId(`dashlist_next_${filter}_${page}`).setLabel('Next ▶').setStyle(ButtonStyle.Secondary).setDisabled(page >= totalPages - 1),
   );
 
   return interaction.editReply({ embeds: [embed], components: [navRow] });
@@ -677,7 +772,7 @@ async function sendCollabList(interaction, filter, page, isUpdate = false) {
 // ═══════════════════════════════════════════════════════════════════
 // HELPERS
 // ═══════════════════════════════════════════════════════════════════
-function input(customId, label, style, required, placeholder) {
+function inp(customId, label, style, required, placeholder) {
   const t = new TextInputBuilder()
     .setCustomId(customId)
     .setLabel(label)
@@ -695,4 +790,4 @@ function dateStamp() {
   return new Date().toISOString().slice(0, 10);
 }
 
-module.exports = { handleDashboard, handleDashboardSelect, handleDashboardModal };
+module.exports = { handleDashboard, handleDashboardSelect, handleDashboardModal, handleEditConfirm };
