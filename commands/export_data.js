@@ -1,11 +1,9 @@
 // commands/export_data.js
-// Admin command to export database as CSV or backup file
-
 const { SlashCommandBuilder, PermissionFlagsBits, AttachmentBuilder } = require('discord.js');
-const path = require('path');
 const fs = require('fs');
+const db = require('../db');
 
-const DB_PATH = process.env.DB_PATH || '/data/collabs.db';
+const DB_PATH = process.env.DB_PATH || require('path').join(__dirname, '..', 'collabs.db');
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -17,8 +15,8 @@ module.exports = {
         .setDescription('What to export')
         .setRequired(true)
         .addChoices(
-          { name: '📋 Collabs CSV', value: 'collabs_csv' },
-          { name: '📋 Submissions CSV', value: 'submissions_csv' },
+          { name: '📋 Collabs CSV',              value: 'collabs_csv' },
+          { name: '📋 Submissions CSV',          value: 'submissions_csv' },
           { name: '💾 Full Database Backup (.db)', value: 'database' },
         )
     ),
@@ -27,23 +25,18 @@ module.exports = {
     await interaction.deferReply({ ephemeral: true });
 
     try {
-      const Database = require('better-sqlite3');
-      const db = new Database(DB_PATH, { readonly: true });
-
       const type = interaction.options.getString('type');
       let fileBuffer, fileName, description;
 
       if (type === 'collabs_csv') {
         const rows = db.prepare('SELECT * FROM collabs').all();
-        const csv = toCSV(rows);
-        fileBuffer = Buffer.from(csv, 'utf8');
+        fileBuffer = Buffer.from(toCSV(rows), 'utf8');
         fileName = `collabs_${dateStamp()}.csv`;
         description = `✅ Exported **${rows.length}** collabs.`;
 
       } else if (type === 'submissions_csv') {
         const rows = db.prepare('SELECT * FROM submissions').all();
-        const csv = toCSV(rows);
-        fileBuffer = Buffer.from(csv, 'utf8');
+        fileBuffer = Buffer.from(toCSV(rows), 'utf8');
         fileName = `submissions_${dateStamp()}.csv`;
         description = `✅ Exported **${rows.length}** submissions.`;
 
@@ -53,25 +46,17 @@ module.exports = {
         description = `✅ Full database backup ready.`;
       }
 
-      db.close();
-
       const attachment = new AttachmentBuilder(fileBuffer, { name: fileName });
 
-      await interaction.editReply({
-        content: description,
-        files: [attachment],
-      });
+      await interaction.editReply({ content: description, files: [attachment] });
 
     } catch (error) {
       console.error('[export_data] Error:', error);
-      await interaction.editReply({
-        content: `❌ Export failed: ${error.message}`,
-      });
+      await interaction.editReply({ content: `❌ Export failed: ${error.message}` });
     }
   },
 };
 
-// --- Helper: Convert array of objects to CSV string ---
 function toCSV(rows) {
   if (!rows || rows.length === 0) return 'No data found.\n';
   const headers = Object.keys(rows[0]);
@@ -86,7 +71,6 @@ function toCSV(rows) {
   return lines.join('\n');
 }
 
-// --- Helper: Get date string like 2025-01-15 ---
 function dateStamp() {
   return new Date().toISOString().slice(0, 10);
 }
