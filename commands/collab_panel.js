@@ -1,6 +1,4 @@
 // commands/collab_panel.js
-// Improved collab panel with Active/Closed filter and pagination
-
 const {
   SlashCommandBuilder,
   EmbedBuilder,
@@ -10,8 +8,8 @@ const {
   PermissionFlagsBits,
 } = require('discord.js');
 
-const DB_PATH = process.env.DB_PATH || '/data/collabs.db';
-const PAGE_SIZE = 5; // collabs per page
+const db = require('../db');
+const PAGE_SIZE = 5;
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -25,26 +23,20 @@ module.exports = {
         .addChoices(
           { name: '🟢 Active Collabs', value: 'active' },
           { name: '🔴 Closed Collabs', value: 'closed' },
-          { name: '📋 All Collabs', value: 'all' },
+          { name: '📋 All Collabs',    value: 'all' },
         )
     ),
 
   async execute(interaction) {
     await interaction.deferReply({ ephemeral: true });
-
     const filter = interaction.options.getString('filter') || 'all';
     await sendCollabPanel(interaction, filter, 0, false);
   },
 };
 
-// ─── Shared function used by both command & button handler ──────────────────
-
+// ── Shared function used by both command & buttonHandler ─────────────────────
 async function sendCollabPanel(interaction, filter, page, isUpdate) {
   try {
-    const Database = require('better-sqlite3');
-    const db = new Database(DB_PATH, { readonly: true });
-
-    // Build query based on filter
     let rows;
     if (filter === 'active') {
       rows = db.prepare(`SELECT * FROM collabs WHERE status = 'active' ORDER BY id DESC`).all();
@@ -54,15 +46,12 @@ async function sendCollabPanel(interaction, filter, page, isUpdate) {
       rows = db.prepare(`SELECT * FROM collabs ORDER BY id DESC`).all();
     }
 
-    db.close();
-
     const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
     if (page < 0) page = 0;
     if (page >= totalPages) page = totalPages - 1;
 
     const pageRows = rows.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
 
-    // Build embed
     const filterLabel = filter === 'active' ? '🟢 Active' : filter === 'closed' ? '🔴 Closed' : '📋 All';
     const embed = new EmbedBuilder()
       .setTitle(`${filterLabel} Collabs`)
@@ -75,16 +64,18 @@ async function sendCollabPanel(interaction, filter, page, isUpdate) {
     } else {
       for (const collab of pageRows) {
         const emoji = collab.status === 'active' ? '🟢' : '🔴';
-        const deadline = collab.deadline ? `⏰ <t:${toUnix(collab.deadline)}:R>` : '⏰ No deadline';
+        // deadline stored as ms timestamp
+        const deadlineText = collab.deadline
+          ? `⏰ <t:${Math.floor(collab.deadline / 1000)}:R>`
+          : '⏰ No deadline';
         embed.addFields({
           name: `${emoji} ${collab.name}`,
-          value: `${deadline}  •  🎟️ Spots: ${collab.spots || 'N/A'}  •  ID: \`${collab.id}\``,
+          value: `${deadlineText}  •  🎟️ Spots: ${collab.spots || 'N/A'}  •  ID: \`${collab.id}\``,
           inline: false,
         });
       }
     }
 
-    // Buttons: Previous / Next / Switch filter
     const navRow = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`panel_prev_${filter}_${page}`)
@@ -129,11 +120,4 @@ async function sendCollabPanel(interaction, filter, page, isUpdate) {
   }
 }
 
-// ─── Helper ──────────────────────────────────────────────────────────────────
-function toUnix(dateStr) {
-  const d = new Date(dateStr);
-  return isNaN(d) ? 0 : Math.floor(d.getTime() / 1000);
-}
-
-// Export the shared function so buttonHandler can use it
 module.exports.sendCollabPanel = sendCollabPanel;
