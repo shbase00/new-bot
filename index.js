@@ -53,7 +53,6 @@ async function ensureStructure(guild) {
     });
   }
 
-  // Announcement Channel
   let ann = guild.channels.cache.find(
     c => c.name === 'collabs-announcements' && c.type === ChannelType.GuildText
   );
@@ -68,7 +67,6 @@ async function ensureStructure(guild) {
     });
   }
 
-  // Logs Channel
   let logs = guild.channels.cache.find(
     c => c.name === 'logs' && c.type === ChannelType.GuildText
   );
@@ -84,7 +82,6 @@ async function ensureStructure(guild) {
   }
 
   return { activeCat, closedCat, ann, logs };
-
 }
 
 // ====== Interaction Handlers ======
@@ -93,45 +90,34 @@ const { handleModal } = require('./interactions/modals');
 
 // ====== Auto Close Logic ======
 async function autoCloseExpiredCollabs() {
-
   try {
-
     const now = Date.now();
-
     const expired = db.prepare(
       "SELECT * FROM collabs WHERE status = 'active' AND deadline <= ?"
     ).all(now);
 
     for (const collab of expired) {
-
       try {
-
         if (!collab.channel_id) continue;
 
         const channel = await client.channels.fetch(collab.channel_id).catch(() => null);
-
         if (!channel || !channel.guild) continue;
 
         const guild = channel.guild;
-
         const { closedCat, logs } = await ensureStructure(guild);
 
         let newName = channel.name;
-
         if (!newName.startsWith('🔴')) {
           newName = `🔴-${newName.replace(/^🟢-/, '')}`;
         }
 
         await channel.setName(newName).catch(() => {});
         await channel.setParent(closedCat.id).catch(() => {});
-
         await channel.permissionOverwrites
           .edit(guild.roles.everyone, { SendMessages: false })
           .catch(() => {});
 
-        db.prepare(
-          "UPDATE collabs SET status = 'closed' WHERE id = ?"
-        ).run(collab.id);
+        db.prepare("UPDATE collabs SET status = 'closed' WHERE id = ?").run(collab.id);
 
         const contestCount = db.prepare(
           "SELECT COUNT(*) as n FROM submissions WHERE collab_id = ? AND contest_link IS NOT NULL AND contest_link != ''"
@@ -152,30 +138,23 @@ async function autoCloseExpiredCollabs() {
       } catch (e) {
         console.error('Auto-close error for collab:', collab.id, e);
       }
-
     }
 
   } catch (err) {
     console.error('Auto-close loop error:', err);
   }
-
 }
 
 // ====== Ready ======
 client.once('clientReady', () => {
-
   console.log(`✅ Logged in as ${client.user.tag}`);
 
-  // NEW: Start error handlers and auto backup
+  // NEW: error protection and auto backups
   setupErrorHandlers(client);
   startAutoBackup(client);
 
   autoCloseExpiredCollabs();
-
-  setInterval(() => {
-    autoCloseExpiredCollabs();
-  }, 10 * 60 * 1000);
-
+  setInterval(() => autoCloseExpiredCollabs(), 10 * 60 * 1000);
 });
 
 // ====== NEW: Button handler for collab_panel pagination ======
@@ -183,57 +162,37 @@ client.on(buttonHandler.name, (...args) => buttonHandler.execute(...args));
 
 // ====== Interaction Create ======
 client.on('interactionCreate', async interaction => {
-
   try {
 
     if (interaction.isChatInputCommand()) {
-
       const command = client.commands.get(interaction.commandName);
       if (!command) return;
-
       await command.execute(interaction, client, ensureStructure);
       return;
-
     }
 
     if (interaction.isButton() || interaction.isStringSelectMenu()) {
-
       await handleButton(interaction);
       return;
-
     }
 
     if (interaction.isModalSubmit()) {
-
       await handleModal(interaction);
       return;
-
     }
 
   } catch (err) {
-
     console.error(err);
-
     try {
-
       if (interaction.replied || interaction.deferred) {
-        await interaction.followUp({
-          content: '❌ Error happened.',
-          ephemeral: true
-        });
+        await interaction.followUp({ content: '❌ Error happened.', ephemeral: true });
       } else {
-        await interaction.reply({
-          content: '❌ Error happened.',
-          ephemeral: true
-        });
+        await interaction.reply({ content: '❌ Error happened.', ephemeral: true });
       }
-
     } catch (e) {
       console.error('Failed to send error reply:', e);
     }
-
   }
-
 });
 
 // ====== Login ======
