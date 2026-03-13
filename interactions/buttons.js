@@ -17,7 +17,7 @@ const fs = require('fs');
 const TIERS = {
   T1: ['mr_nexus','TropadaDrih','CelestialLab','ZaxWeb3','wazoogangg','Nasbelaeth','BlobaETH','word4zz_','AlphaEmpire','honeyratdao','imperial_alpha_','DreamersWeb3'],
   T2: ['casperllz','Arya_00','Mintopia_alpha','MummiesNeverDie','JOKER__NFTs','AK_MIINT','Worldnft','TwinkleNFTs','Basedking','alphanft_7','QuantumMint','AK_ALPHAA','CryptoArias','Soren','squapesonape','lil_lumi','nft_whale17','NFTS50_nfts','SloppyApeYC','Web3_lab_x','orbex','ThunderAlpha','VoofiOfficial','PerrysOnApe'],
-  T3: ['metagems_nft','MythicMintDAO','MintropolisDAO','Iion_Mint','bazuka_Outlaws','MintFlowAlpha','Ace'],
+  T3: ['metagems_nft','MythicMintDAO','MintropolisDAO','Iion_Mint','bazuka_Outlaws','MintFlowAlpha','Ace','test'],
 };
 
 // =====================================================
